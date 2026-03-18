@@ -1,3 +1,4 @@
+
 import { useState, useMemo, useRef } from "react";
 import * as XLSX from "xlsx";
 import {
@@ -263,6 +264,30 @@ function UploadScreen({ onData }) {
         </div>
         <input ref={ref} type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={e => handle(e.target.files[0])} />
         {error && <div style={{ color: T.red, fontSize: 12, marginTop: 8, background: "rgba(232,72,72,0.1)", border: `1px solid ${T.red}`, borderRadius: 8, padding: "8px 12px" }}>{error}</div>}
+
+        {/* Upload screen footer */}
+        <div style={{ marginTop: 40, paddingTop: 20, borderTop: `1px solid ${T.border}` }}>
+          <div style={{
+            display: "inline-flex", alignItems: "center", gap: 8,
+            background: "rgba(47,125,225,0.07)", border: `1px solid ${T.border}`,
+            borderRadius: 10, padding: "10px 18px",
+          }}>
+            <div style={{
+              width: 7, height: 7, borderRadius: "50%",
+              background: T.teal, boxShadow: `0 0 7px ${T.teal}`,
+            }} />
+            <div style={{ textAlign: "left" }}>
+              <div style={{ fontSize: 10, color: T.t3, marginBottom: 2 }}>© 2026 · All rights reserved</div>
+              <div style={{ fontSize: 10, color: T.t2 }}>
+                Developed & Deployed by{" "}
+                <span style={{ color: T.a2, fontWeight: 700 }}>Rahees Mohammed R</span>
+              </div>
+              <div style={{ fontSize: 9.5, color: T.t3, marginTop: 1 }}>
+                Project Manager · Central Warehousing Corporation
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -314,6 +339,53 @@ function Sidebar({ active, setActive, fileName, onReset }) {
           onMouseEnter={e => e.target.style.color = T.red}
           onMouseLeave={e => e.target.style.color = T.t3}
         >⬆ Upload new file</button>
+      </div>
+      {/* Footer */}
+      <div style={{
+        padding: "14px 14px 16px",
+        borderTop: `1px solid ${T.border}`,
+        background: "rgba(0,0,0,0.2)",
+      }}>
+        <div style={{
+          display: "flex", alignItems: "center", gap: 5, marginBottom: 7,
+        }}>
+          <div style={{
+            width: 18, height: 18, borderRadius: 4,
+            background: `linear-gradient(135deg, ${T.accent}, ${T.teal})`,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 9, flexShrink: 0,
+          }}>©</div>
+          <span style={{ fontSize: 9, fontWeight: 600, color: T.t2, letterSpacing: "0.04em", textTransform: "uppercase" }}>
+            Copyright 2026
+          </span>
+        </div>
+        <div style={{
+          fontSize: 9, color: T.t3, lineHeight: 1.65,
+          paddingLeft: 2,
+        }}>
+          <div style={{ color: T.t2, fontWeight: 500, marginBottom: 2 }}>All rights reserved.</div>
+          <div style={{ marginBottom: 5, color: T.t3 }}>
+            Developed & Deployed by
+          </div>
+          <div style={{
+            background: `linear-gradient(135deg, rgba(47,125,225,0.12), rgba(14,196,176,0.08))`,
+            border: `1px solid ${T.border}`,
+            borderRadius: 6, padding: "7px 9px",
+          }}>
+            <div style={{ color: T.a2, fontWeight: 700, fontSize: 10, marginBottom: 2 }}>
+              Rahees Mohammed R
+            </div>
+            <div style={{ color: T.t2, fontSize: 9, fontWeight: 500, marginBottom: 1 }}>
+              Project Manager
+            </div>
+            <div style={{
+              color: T.t3, fontSize: 8.5, lineHeight: 1.5,
+              borderTop: `1px solid ${T.border}`, marginTop: 4, paddingTop: 4,
+            }}>
+              Central Warehousing<br />Corporation
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -931,6 +1003,54 @@ export default function App() {
         {/* Page content */}
         <div className="page-anim" key={activePage}>
           {pages[activePage]}
+        </div>
+
+        {/* Bottom footer bar */}
+        <div style={{
+          borderTop: `1px solid ${T.border}`,
+          background: "rgba(7,13,26,0.95)",
+          padding: "10px 24px",
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          flexWrap: "wrap", gap: 8,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{
+              width: 20, height: 20, borderRadius: 5,
+              background: `linear-gradient(135deg, ${T.accent}, ${T.teal})`,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 10, color: "#fff", fontWeight: 700, flexShrink: 0,
+            }}>©</div>
+            <span style={{ fontSize: 10, color: T.t3 }}>
+              Copyright 2026 · All rights reserved
+            </span>
+            <span style={{
+              display: "inline-block", width: 1, height: 12,
+              background: T.border, margin: "0 2px",
+            }} />
+            <span style={{ fontSize: 10, color: T.t2 }}>
+              Outstanding Invoice Dashboard · RO KOCHI
+            </span>
+          </div>
+          <div style={{
+            display: "flex", alignItems: "center", gap: 8,
+            background: "rgba(47,125,225,0.07)",
+            border: `1px solid ${T.border}`,
+            borderRadius: 8, padding: "5px 12px",
+          }}>
+            <div style={{
+              width: 6, height: 6, borderRadius: "50%",
+              background: T.teal,
+              boxShadow: `0 0 6px ${T.teal}`,
+            }} />
+            <span style={{ fontSize: 10, color: T.t2 }}>
+              Developed & Deployed by{" "}
+              <span style={{ color: T.a2, fontWeight: 700 }}>Rahees Mohammed R</span>
+              <span style={{ color: T.t3, margin: "0 5px" }}>·</span>
+              <span style={{ color: T.t2 }}>Project Manager</span>
+              <span style={{ color: T.t3, margin: "0 5px" }}>·</span>
+              <span style={{ color: T.t2 }}>Central Warehousing Corporation</span>
+            </span>
+          </div>
         </div>
       </div>
     </div>
