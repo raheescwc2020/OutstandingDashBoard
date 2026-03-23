@@ -1,3 +1,4 @@
+
 import { useState, useMemo, useRef } from "react";
 import * as XLSX from "xlsx";
 import {
@@ -45,6 +46,7 @@ const parseDate = raw => {
   if (!raw) return null;
   if (raw instanceof Date) return raw;
   if (typeof raw === "number") {
+    // Excel serial -> use UTC date parts to avoid timezone shift (IST +5:30 shifts midnight back 1 day)
     const utc = new Date((raw - 25569) * 86400 * 1000);
     return new Date(utc.getUTCFullYear(), utc.getUTCMonth(), utc.getUTCDate());
   }
@@ -52,7 +54,9 @@ const parseDate = raw => {
   const parts = s.split(/[/-]/);
   if (parts.length === 3) {
     const [a, b, c] = parts.map(Number);
+    // dd/mm/yyyy
     if (a <= 31 && b <= 12 && c > 1000) return new Date(c, b - 1, a);
+    // mm/dd/yyyy
     if (b <= 31 && a <= 12 && c > 1000) return new Date(c, a - 1, b);
     return new Date(a, b - 1, c);
   }
@@ -63,12 +67,13 @@ const parseDate = raw => {
 function parseWorkbook(wb) {
   const ws = wb.Sheets[wb.SheetNames[0]];
   const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+  // Find header row — look for "Sr" or "Branch" in first few cols, fallback to row 2
   let hdrRow = raw.findIndex(r =>
     String(r[0]).toLowerCase().includes("sr") ||
     String(r[2]).toLowerCase().includes("branch") ||
     String(r[1]).toLowerCase().includes("region")
   );
-  if (hdrRow < 0) hdrRow = 2;
+  if (hdrRow < 0) hdrRow = 2; // fallback: assume row 3 is header (0-indexed row 2)
   const rows = raw.slice(hdrRow + 1);
   const data = [];
   rows.forEach(r => {
@@ -97,44 +102,57 @@ function parseWorkbook(wb) {
 function aggregate(data) {
   const byBranch = {}, byParty = {}, byFY = {}, byType = {}, byMonth = {};
   data.forEach(r => {
+    // branch
     if (!byBranch[r.branch]) byBranch[r.branch] = { o: 0, bill: 0, n: 0 };
     byBranch[r.branch].o += r.outstanding;
     byBranch[r.branch].bill += r.billAmt;
     byBranch[r.branch].n++;
+    // party
     if (!byParty[r.party]) byParty[r.party] = { o: 0, n: 0, byFY: {} };
     byParty[r.party].o += r.outstanding;
     byParty[r.party].n++;
     byParty[r.party].byFY[r.fy] = (byParty[r.party].byFY[r.fy] || 0) + r.outstanding;
+    // fy
     if (!byFY[r.fy]) byFY[r.fy] = { o: 0, bill: 0, n: 0 };
     byFY[r.fy].o += r.outstanding;
     byFY[r.fy].bill += r.billAmt;
     byFY[r.fy].n++;
+    // type
     if (!byType[r.invoiceType]) byType[r.invoiceType] = 0;
     byType[r.invoiceType] += r.outstanding;
+    // monthly
     if (r.invoiceDate) {
       const key = r.invoiceDate.toISOString().slice(0, 7);
       if (!byMonth[key]) byMonth[key] = 0;
       byMonth[key] += r.outstanding;
     }
   });
+
   const branches = Object.entries(byBranch).map(([b, v]) => ({ b, ...v })).sort((a, b) => b.o - a.o);
   const parties  = Object.entries(byParty).map(([p, v]) => ({ p, ...v })).sort((a, b) => b.o - a.o);
   const fys      = Object.entries(byFY).map(([fy, v]) => ({ fy, ...v })).sort((a, b) => a.fy.localeCompare(b.fy));
   const types    = Object.entries(byType).map(([t, o]) => ({ t, o })).sort((a, b) => b.o - a.o);
   const monthly  = Object.entries(byMonth).sort((a, b) => a[0].localeCompare(b[0])).map(([k, v]) => ({
-    m: new Date(k + "-01").toLocaleString("en-IN", { month: "short", year: "2-digit" }), v
+    m: new Date(k + "-01").toLocaleString("en-IN", { month: "short", year: "2-digit" }),
+    v
   }));
   const total = data.reduce((s, r) => s + r.outstanding, 0);
+
+  // party pie: top 7 + others
   const top7p = parties.slice(0, 7);
   const othersP = parties.slice(7).reduce((s, r) => s + r.o, 0);
   const partyPie = [...top7p.map((r, i) => ({ name: r.p.length > 22 ? r.p.slice(0, 22) + "…" : r.p, value: r.o, color: PAL[i] })), { name: "Others", value: othersP, color: "#374151" }];
+
+  // branch pie: top 7 + others
   const top7b = branches.slice(0, 7);
   const othersB = branches.slice(7).reduce((s, r) => s + r.o, 0);
   const branchPie = [...top7b.map((r, i) => ({ name: r.b.replace("CW ", "").replace("CWC ", ""), value: r.o, color: PAL[i] })), { name: "Others", value: othersB, color: "#374151" }];
+
   return { branches, parties, fys, types, monthly, total, partyPie, branchPie };
 }
 
-/* ─── SHARED COMPONENTS ──────────────────────────────────────────── */
+/* ─── COMPONENTS ─────────────────────────────────────────────────── */
+
 const TT = ({ active, payload, label, fmtVal = fs }) => {
   if (!active || !payload?.length) return null;
   return (
@@ -181,7 +199,7 @@ const InlineBar = ({ val, max, color = T.accent }) => (
   </div>
 );
 
-function renderCustomLabel({ cx, cy, midAngle, innerRadius, outerRadius, percent }) {
+function renderCustomLabel({ cx, cy, midAngle, innerRadius, outerRadius, percent, name }) {
   if (percent < 0.04) return null;
   const RADIAN = Math.PI / 180;
   const r = innerRadius + (outerRadius - innerRadius) * 0.5;
@@ -189,9 +207,6 @@ function renderCustomLabel({ cx, cy, midAngle, innerRadius, outerRadius, percent
   const y = cy + r * Math.sin(-midAngle * RADIAN);
   return <text x={x} y={y} fill="white" textAnchor="middle" dominantBaseline="central" fontSize={9} fontWeight={600}>{`${(percent * 100).toFixed(1)}%`}</text>;
 }
-
-const th = { background: T.bg3, color: T.t2, padding: "7px 10px", textAlign: "right", fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", position: "sticky", top: 0, whiteSpace: "nowrap", borderBottom: `1px solid ${T.b2}`, zIndex: 2 };
-const td = { padding: "6px 10px", textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 10, color: T.text };
 
 /* ─── UPLOAD SCREEN ──────────────────────────────────────────────── */
 function UploadScreen({ onData }) {
@@ -218,34 +233,58 @@ function UploadScreen({ onData }) {
   return (
     <div style={{ minHeight: "100vh", background: T.bg, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'DM Sans', sans-serif" }}>
       <div style={{ width: 480, textAlign: "center" }}>
+        {/* Logo / title */}
         <div style={{ marginBottom: 32 }}>
           <div style={{ fontSize: 32, marginBottom: 8 }}>📊</div>
           <div style={{ fontSize: 22, fontWeight: 700, color: T.text, marginBottom: 6 }}>Outstanding Invoice</div>
           <div style={{ fontSize: 22, fontWeight: 700, color: T.a2, marginBottom: 12 }}>Dashboard</div>
           <div style={{ fontSize: 13, color: T.t2 }}>Upload your Excel report to generate a full interactive dashboard with branch-wise, party-wise, and financial year analytics.</div>
         </div>
+
+        {/* Drop zone */}
         <div
           onDragOver={e => { e.preventDefault(); setDragging(true); }}
           onDragLeave={() => setDragging(false)}
           onDrop={e => { e.preventDefault(); setDragging(false); handle(e.dataTransfer.files[0]); }}
           onClick={() => ref.current.click()}
-          style={{ border: `2px dashed ${dragging ? T.accent : T.b2}`, borderRadius: 16, padding: "40px 24px", cursor: "pointer", background: dragging ? "rgba(47,125,225,0.06)" : T.card, transition: "all .2s", marginBottom: 16 }}
+          style={{
+            border: `2px dashed ${dragging ? T.accent : T.b2}`,
+            borderRadius: 16, padding: "40px 24px", cursor: "pointer",
+            background: dragging ? "rgba(47,125,225,0.06)" : T.card,
+            transition: "all .2s", marginBottom: 16,
+          }}
         >
           <div style={{ fontSize: 36, marginBottom: 12 }}>📁</div>
           <div style={{ fontSize: 14, fontWeight: 600, color: T.text, marginBottom: 6 }}>Drag & drop your Excel file here</div>
           <div style={{ fontSize: 12, color: T.t2, marginBottom: 16 }}>or click to browse</div>
-          <div style={{ display: "inline-block", padding: "8px 20px", background: T.accent, borderRadius: 8, fontSize: 12, fontWeight: 600, color: "#fff" }}>Choose File</div>
+          <div style={{ display: "inline-block", padding: "8px 20px", background: T.accent, borderRadius: 8, fontSize: 12, fontWeight: 600, color: "#fff" }}>
+            Choose File
+          </div>
           <div style={{ marginTop: 12, fontSize: 10, color: T.t3 }}>Supports .xlsx · .xls — Outstanding Invoice Report format</div>
         </div>
         <input ref={ref} type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={e => handle(e.target.files[0])} />
         {error && <div style={{ color: T.red, fontSize: 12, marginTop: 8, background: "rgba(232,72,72,0.1)", border: `1px solid ${T.red}`, borderRadius: 8, padding: "8px 12px" }}>{error}</div>}
+
+        {/* Upload screen footer */}
         <div style={{ marginTop: 40, paddingTop: 20, borderTop: `1px solid ${T.border}` }}>
-          <div style={{ display: "inline-flex", alignItems: "center", gap: 8, background: "rgba(47,125,225,0.07)", border: `1px solid ${T.border}`, borderRadius: 10, padding: "10px 18px" }}>
-            <div style={{ width: 7, height: 7, borderRadius: "50%", background: T.teal, boxShadow: `0 0 7px ${T.teal}` }} />
+          <div style={{
+            display: "inline-flex", alignItems: "center", gap: 8,
+            background: "rgba(47,125,225,0.07)", border: `1px solid ${T.border}`,
+            borderRadius: 10, padding: "10px 18px",
+          }}>
+            <div style={{
+              width: 7, height: 7, borderRadius: "50%",
+              background: T.teal, boxShadow: `0 0 7px ${T.teal}`,
+            }} />
             <div style={{ textAlign: "left" }}>
               <div style={{ fontSize: 10, color: T.t3, marginBottom: 2 }}>© 2026 · All rights reserved</div>
-              <div style={{ fontSize: 10, color: T.t2 }}>Developed & Deployed by <span style={{ color: T.a2, fontWeight: 700 }}>Rahees Mohammed R</span></div>
-              <div style={{ fontSize: 9.5, color: T.t3, marginTop: 1 }}>Project Manager · Central Warehousing Corporation</div>
+              <div style={{ fontSize: 10, color: T.t2 }}>
+                Developed & Deployed by{" "}
+                <span style={{ color: T.a2, fontWeight: 700 }}>Rahees Mohammed R</span>
+              </div>
+              <div style={{ fontSize: 9.5, color: T.t3, marginTop: 1 }}>
+                Project Manager · Central Warehousing Corporation
+              </div>
             </div>
           </div>
         </div>
@@ -256,52 +295,95 @@ function UploadScreen({ onData }) {
 
 /* ─── SIDEBAR ────────────────────────────────────────────────────── */
 const MENU = [
-  { id: "overview", icon: "⚡", label: "Overview" },
-  { id: "branch",   icon: "🏢", label: "Branch-wise" },
-  { id: "party",    icon: "🤝", label: "Party-wise" },
-  { id: "fy",       icon: "📅", label: "Financial Year" },
-  { id: "trend",    icon: "📈", label: "Trend & Type" },
-  { id: "list",     icon: "📋", label: "Outstanding List" },
-  { id: "pest",     icon: "🐛", label: "Pest Outstanding" },
+  { id: "overview",  icon: "⚡", label: "Overview" },
+  { id: "branch",    icon: "🏢", label: "Branch-wise" },
+  { id: "party",     icon: "🤝", label: "Party-wise" },
+  { id: "fy",        icon: "📅", label: "Financial Year" },
+  { id: "trend",     icon: "📈", label: "Trend & Type" },
+  { id: "list",      icon: "📋", label: "Outstanding List" },
 ];
 
 function Sidebar({ active, setActive, fileName, onReset }) {
   return (
     <div style={{ width: 210, minHeight: "100vh", background: T.bg2, borderRight: `1px solid ${T.border}`, display: "flex", flexDirection: "column", flexShrink: 0 }}>
+      {/* Brand */}
       <div style={{ padding: "18px 16px 14px", borderBottom: `1px solid ${T.border}` }}>
         <div style={{ fontSize: 13, fontWeight: 700, color: T.text, marginBottom: 2 }}>
           <span style={{ color: T.a2 }}>RO</span> Outstanding
         </div>
         <div style={{ fontSize: 9, color: T.t3, marginTop: 3, lineHeight: 1.4, wordBreak: "break-all" }}>{fileName}</div>
       </div>
+      {/* Nav */}
       <nav style={{ flex: 1, padding: "10px 8px" }}>
         {MENU.map(m => (
-          <button key={m.id} onClick={() => setActive(m.id)}
-            style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "9px 12px", borderRadius: 8, marginBottom: 2, border: "none", cursor: "pointer", background: active === m.id ? "rgba(47,125,225,0.15)" : "transparent", color: active === m.id ? T.a2 : T.t2, fontSize: 12, fontWeight: active === m.id ? 600 : 400, borderLeft: active === m.id ? `3px solid ${T.accent}` : "3px solid transparent", transition: "all .15s", textAlign: "left" }}
+          <button
+            key={m.id}
+            onClick={() => setActive(m.id)}
+            style={{
+              display: "flex", alignItems: "center", gap: 10, width: "100%",
+              padding: "9px 12px", borderRadius: 8, marginBottom: 2, border: "none", cursor: "pointer",
+              background: active === m.id ? "rgba(47,125,225,0.15)" : "transparent",
+              color: active === m.id ? T.a2 : T.t2,
+              fontSize: 12, fontWeight: active === m.id ? 600 : 400,
+              borderLeft: active === m.id ? `3px solid ${T.accent}` : "3px solid transparent",
+              transition: "all .15s", textAlign: "left",
+            }}
           >
             <span style={{ fontSize: 14 }}>{m.icon}</span> {m.label}
           </button>
         ))}
       </nav>
+      {/* Reset */}
       <div style={{ padding: "12px 8px", borderTop: `1px solid ${T.border}` }}>
-        <button onClick={onReset}
-          style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: `1px solid ${T.border}`, background: "transparent", color: T.t3, fontSize: 11, cursor: "pointer", transition: "all .15s" }}
+        <button onClick={onReset} style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: `1px solid ${T.border}`, background: "transparent", color: T.t3, fontSize: 11, cursor: "pointer", transition: "all .15s" }}
           onMouseEnter={e => e.target.style.color = T.red}
           onMouseLeave={e => e.target.style.color = T.t3}
         >⬆ Upload new file</button>
       </div>
-      <div style={{ padding: "14px 14px 16px", borderTop: `1px solid ${T.border}`, background: "rgba(0,0,0,0.2)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 7 }}>
-          <div style={{ width: 18, height: 18, borderRadius: 4, background: `linear-gradient(135deg, ${T.accent}, ${T.teal})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, flexShrink: 0 }}>©</div>
-          <span style={{ fontSize: 9, fontWeight: 600, color: T.t2, letterSpacing: "0.04em", textTransform: "uppercase" }}>Copyright 2026</span>
+      {/* Footer */}
+      <div style={{
+        padding: "14px 14px 16px",
+        borderTop: `1px solid ${T.border}`,
+        background: "rgba(0,0,0,0.2)",
+      }}>
+        <div style={{
+          display: "flex", alignItems: "center", gap: 5, marginBottom: 7,
+        }}>
+          <div style={{
+            width: 18, height: 18, borderRadius: 4,
+            background: `linear-gradient(135deg, ${T.accent}, ${T.teal})`,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 9, flexShrink: 0,
+          }}>©</div>
+          <span style={{ fontSize: 9, fontWeight: 600, color: T.t2, letterSpacing: "0.04em", textTransform: "uppercase" }}>
+            Copyright 2026
+          </span>
         </div>
-        <div style={{ fontSize: 9, color: T.t3, lineHeight: 1.65, paddingLeft: 2 }}>
+        <div style={{
+          fontSize: 9, color: T.t3, lineHeight: 1.65,
+          paddingLeft: 2,
+        }}>
           <div style={{ color: T.t2, fontWeight: 500, marginBottom: 2 }}>All rights reserved.</div>
-          <div style={{ marginBottom: 5, color: T.t3 }}>Developed & Deployed by</div>
-          <div style={{ background: `linear-gradient(135deg, rgba(47,125,225,0.12), rgba(14,196,176,0.08))`, border: `1px solid ${T.border}`, borderRadius: 6, padding: "7px 9px" }}>
-            <div style={{ color: T.a2, fontWeight: 700, fontSize: 10, marginBottom: 2 }}>Rahees Mohammed R</div>
-            <div style={{ color: T.t2, fontSize: 9, fontWeight: 500, marginBottom: 1 }}>Project Manager</div>
-            <div style={{ color: T.t3, fontSize: 8.5, lineHeight: 1.5, borderTop: `1px solid ${T.border}`, marginTop: 4, paddingTop: 4 }}>Central Warehousing<br />Corporation</div>
+          <div style={{ marginBottom: 5, color: T.t3 }}>
+            Developed & Deployed by
+          </div>
+          <div style={{
+            background: `linear-gradient(135deg, rgba(47,125,225,0.12), rgba(14,196,176,0.08))`,
+            border: `1px solid ${T.border}`,
+            borderRadius: 6, padding: "7px 9px",
+          }}>
+            <div style={{ color: T.a2, fontWeight: 700, fontSize: 10, marginBottom: 2 }}>
+              Rahees Mohammed R
+            </div>
+            <div style={{ color: T.t2, fontSize: 9, fontWeight: 500, marginBottom: 1 }}>
+              Project Manager
+            </div>
+            <div style={{
+              color: T.t3, fontSize: 8.5, lineHeight: 1.5,
+              borderTop: `1px solid ${T.border}`, marginTop: 4, paddingTop: 4,
+            }}>
+              Central Warehousing<br />Corporation
+            </div>
           </div>
         </div>
       </div>
@@ -314,15 +396,19 @@ function OverviewPage({ data, agg }) {
   const { branches, parties, fys, types, total, partyPie } = agg;
   const topBranch = branches[0];
   const topParty  = parties[0];
+
   return (
     <div style={{ padding: 20 }}>
+      {/* KPIs */}
       <div style={{ display: "flex", gap: 12, marginBottom: 18, flexWrap: "wrap" }}>
         <KPI val={fs(total)} lbl="Total Outstanding" sub={`${data.length} invoices · all branches`} color={T.accent} />
         <KPI val={fs(fys.find(f => f.fy.includes("2025-26"))?.o || 0)} lbl="FY 2025-26" sub="Current financial year" color={T.red} />
         <KPI val={fs(topBranch?.o || 0)} lbl="Top Branch" sub={topBranch?.b || ""} color={T.gold} />
         <KPI val={fs(topParty?.o || 0)} lbl="Top Party" sub={`${topParty?.p?.slice(0, 28) || ""} (${topParty?.n || 0} inv)`} color={T.green} />
       </div>
+
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
+        {/* Branch bar */}
         <Card>
           <CardTitle>Branch-wise outstanding</CardTitle>
           <ResponsiveContainer width="100%" height={260}>
@@ -337,6 +423,8 @@ function OverviewPage({ data, agg }) {
             </BarChart>
           </ResponsiveContainer>
         </Card>
+
+        {/* Party pie */}
         <Card>
           <CardTitle>Top parties vs others</CardTitle>
           <ResponsiveContainer width="100%" height={260}>
@@ -350,7 +438,9 @@ function OverviewPage({ data, agg }) {
           </ResponsiveContainer>
         </Card>
       </div>
+
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+        {/* FY bar */}
         <Card>
           <CardTitle color={T.pur}>Financial Year comparison</CardTitle>
           <ResponsiveContainer width="100%" height={200}>
@@ -365,6 +455,8 @@ function OverviewPage({ data, agg }) {
             </BarChart>
           </ResponsiveContainer>
         </Card>
+
+        {/* Type pie */}
         <Card>
           <CardTitle color={T.teal}>Invoice type split</CardTitle>
           <ResponsiveContainer width="100%" height={200}>
@@ -387,6 +479,7 @@ function BranchPage({ agg }) {
   const { branches, branchPie } = agg;
   const max = branches[0]?.o || 1;
   const total = branches.reduce((s, r) => s + r.o, 0);
+
   return (
     <div style={{ padding: 20 }}>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
@@ -417,6 +510,7 @@ function BranchPage({ agg }) {
           </ResponsiveContainer>
         </Card>
       </div>
+
       <Card>
         <CardTitle>Branch-wise outstanding table</CardTitle>
         <div style={{ overflowX: "auto", maxHeight: 380, overflowY: "auto" }}>
@@ -469,11 +563,16 @@ function PartyPage({ agg }) {
   const max = parties[0]?.o || 1;
   const total = parties.reduce((s, r) => s + r.o, 0);
   const fyColors = { "FY 2022-23": T.pur, "FY 2023-24": T.teal, "FY 2024-25": T.gold, "FY 2025-26": T.red };
+
+  // FY26 pie
   const fy26Sorted = [...parties].sort((a, b) => (b.byFY["FY 2025-26"] || 0) - (a.byFY["FY 2025-26"] || 0));
   const top8_26 = fy26Sorted.slice(0, 8);
   const others26 = fy26Sorted.slice(8).reduce((s, r) => s + (r.byFY["FY 2025-26"] || 0), 0);
   const pie26 = [...top8_26.map((r, i) => ({ name: r.p.length > 20 ? r.p.slice(0, 20) + "…" : r.p, value: r.byFY["FY 2025-26"] || 0, color: PAL[i] })), { name: "Others", value: others26, color: "#374151" }];
+
+  // stacked bar top 10
   const top10 = parties.slice(0, 10).map(r => ({ name: r.p.length > 22 ? r.p.slice(0, 22) + "…" : r.p, ...Object.fromEntries(fyKeys.map(k => [k, r.byFY[k] || 0])) }));
+
   return (
     <div style={{ padding: 20 }}>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
@@ -502,6 +601,7 @@ function PartyPage({ agg }) {
           </ResponsiveContainer>
         </Card>
       </div>
+
       <Card style={{ marginBottom: 14 }}>
         <CardTitle>Top 10 parties — FY stacked bar</CardTitle>
         <ResponsiveContainer width="100%" height={200}>
@@ -515,6 +615,7 @@ function PartyPage({ agg }) {
           </BarChart>
         </ResponsiveContainer>
       </Card>
+
       <Card>
         <CardTitle>Party-wise outstanding with FY breakup</CardTitle>
         <div style={{ overflowX: "auto", maxHeight: 400, overflowY: "auto" }}>
@@ -523,7 +624,7 @@ function PartyPage({ agg }) {
               <tr>
                 <th style={th}>#</th>
                 <th style={{ ...th, textAlign: "left" }}>Party Name</th>
-                {fyKeys.map(k => <th key={k} style={th}>{k}</th>)}
+                {fyKeys.map(k => <th key={k} style={th}>{k.replace("FY ", "FY ")}</th>)}
                 <th style={th}>Total (₹)</th>
                 <th style={th}>Inv</th>
                 <th style={th}>Share</th>
@@ -541,7 +642,7 @@ function PartyPage({ agg }) {
                 </tr>
               ))}
               <tr style={{ background: "rgba(47,125,225,0.07)", fontWeight: 700 }}>
-                <td style={td} colSpan={2}><span style={{ color: T.a3 }}>GRAND TOTAL</span></td>
+                <td style={{ ...td }} colSpan={2}><span style={{ color: T.a3 }}>GRAND TOTAL</span></td>
                 {fyKeys.map(k => <td key={k} style={{ ...td, color: T.a3 }}>{fi(agg.fys.find(f => f.fy === k)?.o || 0)}</td>)}
                 <td style={{ ...td, color: T.a3 }}>{fi(total)}</td>
                 <td style={{ ...td, color: T.a3 }}>{parties.reduce((s, r) => s + r.n, 0)}</td>
@@ -555,11 +656,15 @@ function PartyPage({ agg }) {
   );
 }
 
+const th = { background: T.bg3, color: T.t2, padding: "7px 10px", textAlign: "right", fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", position: "sticky", top: 0, whiteSpace: "nowrap", borderBottom: `1px solid ${T.b2}`, zIndex: 2 };
+const td = { padding: "6px 10px", textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 10, color: T.text };
+
 /* ─── FY PAGE ────────────────────────────────────────────────────── */
 function FYPage({ agg }) {
   const { fys, parties } = agg;
   const total = fys.reduce((s, r) => s + r.o, 0);
   const fyColors = ["#8b67f0", "#0ec4b0", "#f0a429", "#e84848"];
+
   return (
     <div style={{ padding: 20 }}>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
@@ -590,6 +695,7 @@ function FYPage({ agg }) {
           </ResponsiveContainer>
         </Card>
       </div>
+
       <Card style={{ marginBottom: 14 }}>
         <CardTitle>FY-wise summary</CardTitle>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
@@ -623,7 +729,8 @@ function FYPage({ agg }) {
           </tbody>
         </table>
       </Card>
-      {fys.slice().reverse().map((f) => {
+
+      {fys.slice().reverse().map((f, revIdx) => {
         const origIdx = fys.indexOf(f);
         const fyParties = parties.filter(p => (p.byFY[f.fy] || 0) > 0).map(p => ({ ...p, fyO: p.byFY[f.fy] || 0 })).sort((a, b) => b.fyO - a.fyO);
         const fyTotal = f.o;
@@ -724,9 +831,9 @@ function ListPage({ data }) {
   const [page, setPage]       = useState(1);
   const PER_PAGE = 30;
 
-  const branches = useMemo(() => ["All", ...Array.from(new Set(data.map(r => r.branch))).sort()], [data]);
-  const fys      = useMemo(() => ["All", ...Array.from(new Set(data.map(r => r.fy))).sort()], [data]);
-  const types    = useMemo(() => ["All", ...Array.from(new Set(data.map(r => r.invoiceType))).sort()], [data]);
+  const branches  = useMemo(() => ["All", ...Array.from(new Set(data.map(r => r.branch))).sort()], [data]);
+  const fys       = useMemo(() => ["All", ...Array.from(new Set(data.map(r => r.fy))).sort()], [data]);
+  const types     = useMemo(() => ["All", ...Array.from(new Set(data.map(r => r.invoiceType))).sort()], [data]);
 
   const filtered = useMemo(() => {
     let d = data;
@@ -748,31 +855,45 @@ function ListPage({ data }) {
   const pages  = Math.ceil(filtered.length / PER_PAGE);
   const paged  = filtered.slice((page - 1) * PER_PAGE, page * PER_PAGE);
   const totOut = filtered.reduce((s, r) => s + r.outstanding, 0);
-  const sortBy   = key => setSort(s => ({ key, dir: s.key === key ? -s.dir : -1 }));
-  const sortIcon = k   => sort.key === k ? <span style={{ color: T.accent, marginLeft: 2 }}>{sort.dir === -1 ? "↓" : "↑"}</span> : null;
+
+  const sortBy = key => setSort(s => ({ key, dir: s.key === key ? -s.dir : -1 }));
+  const sortIcon = k => sort.key === k ? <span style={{ color: T.accent, marginLeft: 2 }}>{sort.dir === -1 ? "↓" : "↑"}</span> : null;
+
   const sel = { background: T.bg3, border: `1px solid ${T.border}`, color: T.text, padding: "5px 10px", borderRadius: 6, fontSize: 11, outline: "none" };
   const inp = { ...sel, flex: 1, minWidth: 160 };
 
   return (
     <div style={{ padding: 20 }}>
+      {/* Filters */}
       <Card style={{ marginBottom: 14 }}>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
           <input style={inp} placeholder="Search party, invoice, branch…" value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} />
-          <select style={sel} value={branchF} onChange={e => { setBranchF(e.target.value); setPage(1); }}>{branches.map(b => <option key={b}>{b}</option>)}</select>
-          <select style={sel} value={fyF}     onChange={e => { setFyF(e.target.value); setPage(1); }}>{fys.map(f => <option key={f}>{f}</option>)}</select>
-          <select style={sel} value={typeF}   onChange={e => { setTypeF(e.target.value); setPage(1); }}>{types.map(t => <option key={t}>{t}</option>)}</select>
+          <select style={sel} value={branchF} onChange={e => { setBranchF(e.target.value); setPage(1); }}>
+            {branches.map(b => <option key={b}>{b}</option>)}
+          </select>
+          <select style={sel} value={fyF} onChange={e => { setFyF(e.target.value); setPage(1); }}>
+            {fys.map(f => <option key={f}>{f}</option>)}
+          </select>
+          <select style={sel} value={typeF} onChange={e => { setTypeF(e.target.value); setPage(1); }}>
+            {types.map(t => <option key={t}>{t}</option>)}
+          </select>
           <div style={{ marginLeft: "auto", fontSize: 11, color: T.t2 }}>
-            <span style={{ color: T.a3, fontWeight: 700 }}>{filtered.length}</span> records ·{" "}
-            <span style={{ color: T.gold, fontWeight: 700 }}>{fs(totOut)}</span> outstanding
+            <span style={{ color: T.a3, fontWeight: 700 }}>{filtered.length}</span> records · <span style={{ color: T.gold, fontWeight: 700 }}>{fs(totOut)}</span> outstanding
           </div>
         </div>
       </Card>
+
+      {/* Table */}
       <Card>
         <div style={{ overflowX: "auto", maxHeight: 500, overflowY: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
             <thead>
               <tr>
-                {[["#",null],["Branch","branch"],["Party","party"],["Invoice No.","invoiceNo"],["Date","invoiceDate"],["FY","fy"],["Type","invoiceType"],["Bill Amt","billAmt"],["Paid","paidAmt"],["Outstanding","outstanding"],["Reason",null]].map(([h, k], i) => (
+                {[
+                  ["#", null], ["Branch", "branch"], ["Party", "party"], ["Invoice No.", "invoiceNo"],
+                  ["Date", "invoiceDate"], ["FY", "fy"], ["Type", "invoiceType"],
+                  ["Bill Amt", "billAmt"], ["Paid", "paidAmt"], ["Outstanding", "outstanding"], ["Reason", null]
+                ].map(([h, k], i) => (
                   <th key={i} onClick={k ? () => sortBy(k) : undefined}
                     style={{ ...th, textAlign: i >= 7 ? "right" : "left", cursor: k ? "pointer" : "default", userSelect: "none" }}>
                     {h}{k && sortIcon(k)}
@@ -799,344 +920,18 @@ function ListPage({ data }) {
             </tbody>
           </table>
         </div>
+
+        {/* Pagination */}
         {pages > 1 && (
           <div style={{ display: "flex", gap: 6, justifyContent: "center", marginTop: 12, flexWrap: "wrap" }}>
             <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
               style={{ padding: "4px 10px", background: T.bg3, border: `1px solid ${T.border}`, borderRadius: 6, color: T.t2, fontSize: 10, cursor: "pointer" }}>‹ Prev</button>
             {Array.from({ length: Math.min(pages, 9) }, (_, i) => {
               const p = pages <= 9 ? i + 1 : page <= 5 ? i + 1 : page >= pages - 4 ? pages - 8 + i : page - 4 + i;
-              return <button key={p} onClick={() => setPage(p)} style={{ padding: "4px 9px", background: p === page ? T.accent : T.bg3, border: `1px solid ${p === page ? T.accent : T.border}`, borderRadius: 6, color: p === page ? "#fff" : T.t2, fontSize: 10, cursor: "pointer" }}>{p}</button>;
-            })}
-            <button onClick={() => setPage(p => Math.min(pages, p + 1))} disabled={page === pages}
-              style={{ padding: "4px 10px", background: T.bg3, border: `1px solid ${T.border}`, borderRadius: 6, color: T.t2, fontSize: 10, cursor: "pointer" }}>Next ›</button>
-          </div>
-        )}
-      </Card>
-    </div>
-  );
-}
-
-/* ─── PEST OUTSTANDING DASHBOARD ─────────────────────────────────── */
-// FIX: Filter ONLY on invoiceType === "Pest Bill" — mirrors Excel column filter exactly.
-// Old broad keyword search across party/reason/branch incorrectly inflated ₹63L → ₹2.54 Cr.
-function isPestRow(row) {
-  const t = String(row.invoiceType || "").trim().toLowerCase();
-  return t.startsWith("pest");
-}
-
-function aggregatePest(data) {
-  let pest = data.filter(isPestRow);
-  const demoMode = pest.length === 0;
-  if (demoMode) pest = data;
-
-  const byBranch = {}, byParty = {}, byFY = {}, byType = {}, byMonth = {};
-  pest.forEach(r => {
-    if (!byBranch[r.branch]) byBranch[r.branch] = { o: 0, bill: 0, n: 0 };
-    byBranch[r.branch].o    += r.outstanding;
-    byBranch[r.branch].bill += r.billAmt;
-    byBranch[r.branch].n++;
-    if (!byParty[r.party]) byParty[r.party] = { o: 0, n: 0 };
-    byParty[r.party].o += r.outstanding;
-    byParty[r.party].n++;
-    if (!byFY[r.fy]) byFY[r.fy] = { o: 0, bill: 0, n: 0 };
-    byFY[r.fy].o    += r.outstanding;
-    byFY[r.fy].bill += r.billAmt;
-    byFY[r.fy].n++;
-    if (!byType[r.invoiceType]) byType[r.invoiceType] = 0;
-    byType[r.invoiceType] += r.outstanding;
-    if (r.invoiceDate) {
-      const key = r.invoiceDate.toISOString().slice(0, 7);
-      if (!byMonth[key]) byMonth[key] = 0;
-      byMonth[key] += r.outstanding;
-    }
-  });
-
-  const branches  = Object.entries(byBranch).map(([b, v]) => ({ b, ...v })).sort((a, b) => b.o - a.o);
-  const parties   = Object.entries(byParty).map(([p, v]) => ({ p, ...v })).sort((a, b) => b.o - a.o);
-  const fys       = Object.entries(byFY).map(([fy, v]) => ({ fy, ...v })).sort((a, b) => a.fy.localeCompare(b.fy));
-  const types     = Object.entries(byType).map(([t, o]) => ({ t, o })).sort((a, b) => b.o - a.o);
-  const monthly   = Object.entries(byMonth).sort((a, b) => a[0].localeCompare(b[0])).map(([k, v]) => ({
-    m: new Date(k + "-01").toLocaleString("en-IN", { month: "short", year: "2-digit" }), v,
-  }));
-  const total     = pest.reduce((s, r) => s + r.outstanding, 0);
-  const totalBill = pest.reduce((s, r) => s + r.billAmt, 0);
-  const totalPaid = pest.reduce((s, r) => s + r.paidAmt, 0);
-
-  const top7p   = parties.slice(0, 7);
-  const othersP = parties.slice(7).reduce((s, r) => s + r.o, 0);
-  const partyPie  = [...top7p.map((r, i) => ({ name: r.p.length > 22 ? r.p.slice(0, 22) + "…" : r.p, value: r.o, color: PAL[i] })), { name: "Others", value: othersP, color: "#374151" }];
-  const top6b   = branches.slice(0, 6);
-  const othersB = branches.slice(6).reduce((s, r) => s + r.o, 0);
-  const branchPie = [...top6b.map((r, i) => ({ name: r.b.replace("CW ", "").replace("CWC ", ""), value: r.o, color: PAL[i] })), { name: "Others", value: othersB, color: "#374151" }];
-
-  return { pest, branches, parties, fys, types, monthly, total, totalBill, totalPaid, partyPie, branchPie, demoMode };
-}
-
-const PEST_ACCENT = "#1abf8a";
-const PEST_SEC    = "#0ec4b0";
-
-function PestPage({ data }) {
-  const [search, setSearch]   = useState("");
-  const [branchF, setBranchF] = useState("All");
-  const [fyF, setFyF]         = useState("All");
-  const [page, setPage]       = useState(1);
-  const PER_PAGE = 25;
-
-  const pa = useMemo(() => aggregatePest(data), [data]);
-  const { pest, branches, parties, fys, types, monthly, total, totalBill, totalPaid, partyPie, branchPie, demoMode } = pa;
-
-  const maxB    = branches[0]?.o || 1;
-  const maxP    = parties[0]?.o  || 1;
-  const fyColors = ["#8b67f0", "#0ec4b0", "#f0a429", "#e84848"];
-  const collPct  = totalBill > 0 ? ((totalBill - total) / totalBill * 100).toFixed(1) : "—";
-
-  const branchOpts = useMemo(() => ["All", ...branches.map(b => b.b)], [branches]);
-  const fyOpts     = useMemo(() => ["All", ...fys.map(f => f.fy)],     [fys]);
-
-  const filtered = useMemo(() => {
-    let d = pest;
-    if (branchF !== "All") d = d.filter(r => r.branch === branchF);
-    if (fyF !== "All")     d = d.filter(r => r.fy === fyF);
-    if (search) {
-      const s = search.toLowerCase();
-      d = d.filter(r => r.party.toLowerCase().includes(s) || r.invoiceNo.toLowerCase().includes(s) || r.branch.toLowerCase().includes(s));
-    }
-    return [...d].sort((a, b) => b.outstanding - a.outstanding);
-  }, [pest, branchF, fyF, search]);
-
-  const pages  = Math.ceil(filtered.length / PER_PAGE);
-  const paged  = filtered.slice((page - 1) * PER_PAGE, page * PER_PAGE);
-  const totOut = filtered.reduce((s, r) => s + r.outstanding, 0);
-
-  const sel = { background: T.bg3, border: `1px solid ${T.border}`, color: T.text, padding: "5px 10px", borderRadius: 6, fontSize: 11, outline: "none" };
-  const inp = { ...sel, flex: 1, minWidth: 160 };
-
-  return (
-    <div style={{ padding: 20 }}>
-      {demoMode && (
-        <div style={{ marginBottom: 14, padding: "10px 16px", background: "rgba(240,164,41,0.10)", border: `1px solid rgba(240,164,41,0.35)`, borderRadius: 10, fontSize: 11, color: T.gold, display: "flex", gap: 8, alignItems: "center" }}>
-          <span style={{ fontSize: 16 }}>⚠️</span>
-          <span>No "Pest Bill" invoice type found — showing all records as demo. Ensure Invoice Type column contains "Pest Bill" for correct filtering.</span>
-        </div>
-      )}
-
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-        <div style={{ padding: "5px 14px", background: "rgba(26,191,138,0.13)", border: `1px solid rgba(26,191,138,0.35)`, borderRadius: 20, fontSize: 11, fontWeight: 700, color: PEST_ACCENT, display: "flex", alignItems: "center", gap: 6 }}>
-          <span>🐛</span> PEST CONTROL · OUTSTANDING REPORT
-        </div>
-        <div style={{ fontSize: 10, color: T.t3 }}>{pest.length} pest invoices identified</div>
-      </div>
-
-      <div style={{ display: "flex", gap: 12, marginBottom: 18, flexWrap: "wrap" }}>
-        <KPI val={fs(total)}       lbl="Total Pest Outstanding" sub={`${pest.length} invoices · all branches`} color={PEST_ACCENT} />
-        {/* <KPI val={fs(totalBill)}   lbl="Total Pest Billed"      sub="Across all financial years"              color={T.accent} />
-        <KPI val={fs(totalPaid)}   lbl="Total Pest Collected"   sub={`Collection: ${collPct}%`}               color={T.teal} />
-        <KPI val={`${collPct}%`}   lbl="Collection Rate"        sub="Billed vs collected"                     color={parseFloat(collPct) > 80 ? T.green : parseFloat(collPct) > 50 ? T.gold : T.red} /> */}
-        <KPI val={branches.length} lbl="Branches Active"        sub="With pest outstanding"                   color={T.pur} />
-        <KPI val={parties.length}  lbl="Parties"                sub="Unique pest vendors/clients"             color={T.gold} />
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
-        <Card>
-          <CardTitle color={PEST_ACCENT}>Branch-wise pest outstanding</CardTitle>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={branches.slice(0, 12)} layout="vertical" margin={{ left: 10, right: 10 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={T.border} horizontal={false} />
-              <XAxis type="number" tick={{ fill: T.t2, fontSize: 9 }} tickFormatter={fs} axisLine={false} tickLine={false} />
-              <YAxis type="category" dataKey="b" tick={{ fill: T.t2, fontSize: 8 }} width={130} axisLine={false} tickLine={false} tickFormatter={v => v.replace("CW ", "").replace("CWC ", "").slice(0, 18)} />
-              <Tooltip content={<TT />} />
-              <Bar dataKey="o" name="Outstanding" radius={[0, 4, 4, 0]}>
-                {branches.slice(0, 12).map((_, i) => <Cell key={i} fill={PAL[i % PAL.length]} />)}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </Card>
-        <Card>
-          <CardTitle color={PEST_SEC}>Branch share (pest)</CardTitle>
-          <ResponsiveContainer width="100%" height={300}>
-            <PieChart>
-              <Pie data={branchPie} cx="45%" cy="48%" innerRadius={60} outerRadius={108} dataKey="value" labelLine={false} label={renderCustomLabel}>
-                {branchPie.map((e, i) => <Cell key={i} fill={e.color} />)}
-              </Pie>
-              <Tooltip content={<TT />} />
-              <Legend iconType="circle" iconSize={8} formatter={(v) => <span style={{ color: T.t2, fontSize: 9 }}>{v}</span>} />
-            </PieChart>
-          </ResponsiveContainer>
-        </Card>
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
-        <Card>
-          <CardTitle color={T.gold}>Top pest parties — share</CardTitle>
-          <ResponsiveContainer width="100%" height={280}>
-            <PieChart>
-              <Pie data={partyPie} cx="45%" cy="50%" innerRadius={55} outerRadius={100} dataKey="value" labelLine={false} label={renderCustomLabel}>
-                {partyPie.map((e, i) => <Cell key={i} fill={e.color} />)}
-              </Pie>
-              <Tooltip content={<TT />} />
-              <Legend iconType="circle" iconSize={8} formatter={(v) => <span style={{ color: T.t2, fontSize: 9 }}>{v}</span>} />
-            </PieChart>
-          </ResponsiveContainer>
-        </Card>
-        <Card>
-          <CardTitle color={T.pur}>Financial year — pest outstanding vs billed</CardTitle>
-          <ResponsiveContainer width="100%" height={280}>
-            <BarChart data={fys} margin={{ left: 10, right: 10 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={T.border} />
-              <XAxis dataKey="fy" tick={{ fill: T.t2, fontSize: 9 }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fill: T.t2, fontSize: 9 }} tickFormatter={fs} axisLine={false} tickLine={false} />
-              <Tooltip content={<TT />} />
-              <Legend iconType="circle" iconSize={8} formatter={(v) => <span style={{ color: T.t2, fontSize: 9 }}>{v}</span>} />
-              <Bar dataKey="o"    name="Outstanding" fill={T.red}                 radius={[4, 4, 0, 0]} />
-              <Bar dataKey="bill" name="Billed"      fill="rgba(47,125,225,0.35)" radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </Card>
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 14, marginBottom: 14 }}>
-        <Card>
-          <CardTitle color={T.accent}>Monthly pest outstanding trend</CardTitle>
-          <ResponsiveContainer width="100%" height={220}>
-            <LineChart data={monthly} margin={{ left: 10, right: 20 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={T.border} />
-              <XAxis dataKey="m" tick={{ fill: T.t2, fontSize: 8 }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fill: T.t2, fontSize: 9 }} tickFormatter={fs} axisLine={false} tickLine={false} />
-              <Tooltip content={<TT />} />
-              <Line type="monotone" dataKey="v" name="Pest Outstanding" stroke={PEST_ACCENT} strokeWidth={2.5} dot={{ r: 3.5, fill: PEST_ACCENT, stroke: T.bg, strokeWidth: 1 }} activeDot={{ r: 6 }} />
-            </LineChart>
-          </ResponsiveContainer>
-        </Card>
-        <Card>
-          <CardTitle color={T.teal}>Invoice type split (pest)</CardTitle>
-          <ResponsiveContainer width="100%" height={220}>
-            <PieChart>
-              <Pie data={types.map((t, i) => ({ name: t.t || "Unknown", value: t.o, color: PAL[i] }))} cx="45%" cy="48%" outerRadius={85} dataKey="value" labelLine={false} label={renderCustomLabel}>
-                {types.map((_, i) => <Cell key={i} fill={PAL[i % PAL.length]} />)}
-              </Pie>
-              <Tooltip content={<TT />} />
-              <Legend iconType="circle" iconSize={8} formatter={(v) => <span style={{ color: T.t2, fontSize: 9 }}>{v}</span>} />
-            </PieChart>
-          </ResponsiveContainer>
-        </Card>
-      </div>
-
-      <Card style={{ marginBottom: 14 }}>
-        <CardTitle color={PEST_ACCENT}>Branch-wise pest summary</CardTitle>
-        <div style={{ overflowX: "auto", maxHeight: 320, overflowY: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
-            <thead>
-              <tr>{["#","Branch","Billed (₹)","Collected (₹)","Outstanding (₹)","Invoices","Collection %","Share"].map((h, i) => (
-                <th key={i} style={{ ...th, textAlign: i <= 1 ? "left" : "right" }}>{h}</th>
-              ))}</tr>
-            </thead>
-            <tbody>
-              {branches.map((r, i) => {
-                const paid = r.bill - r.o;
-                const coll = r.bill > 0 ? (paid / r.bill * 100).toFixed(1) : "—";
-                const cc   = parseFloat(coll) > 80 ? T.green : parseFloat(coll) > 50 ? T.gold : T.red;
-                return (
-                  <tr key={i} style={{ borderBottom: `1px solid rgba(26,43,71,0.4)` }}>
-                    <td style={{ ...td, textAlign: "left", color: T.t3 }}>{i + 1}</td>
-                    <td style={{ ...td, textAlign: "left", color: T.text }}>{r.b}</td>
-                    <td style={td}>{fi(r.bill)}</td>
-                    <td style={{ ...td, color: T.green }}>{fi(paid)}</td>
-                    <td style={{ ...td, fontWeight: 700, color: T.a3 }}>{fi(r.o)}</td>
-                    <td style={td}>{r.n}</td>
-                    <td style={{ ...td, color: cc, fontWeight: 600 }}>{coll}%</td>
-                    <td style={{ ...td, minWidth: 100 }}><InlineBar val={r.o} max={maxB} color={PAL[i % PAL.length]} /></td>
-                  </tr>
-                );
-              })}
-              <tr style={{ background: "rgba(26,191,138,0.07)", fontWeight: 700 }}>
-                <td style={{ ...td, textAlign: "left", color: PEST_ACCENT }} colSpan={2}>TOTAL</td>
-                <td style={{ ...td, color: PEST_ACCENT }}>{fi(totalBill)}</td>
-                <td style={{ ...td, color: T.green }}>{fi(totalPaid)}</td>
-                <td style={{ ...td, color: PEST_ACCENT }}>{fi(total)}</td>
-                <td style={{ ...td, color: PEST_ACCENT }}>{pest.length}</td>
-                <td colSpan={2} />
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </Card>
-
-      <Card style={{ marginBottom: 14 }}>
-        <CardTitle color={T.gold}>Top pest parties — outstanding ranking</CardTitle>
-        <div style={{ overflowX: "auto", maxHeight: 320, overflowY: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
-            <thead>
-              <tr>{["#","Party Name","Outstanding (₹)","Invoices","Share"].map((h, i) => (
-                <th key={i} style={{ ...th, textAlign: i <= 1 ? "left" : "right" }}>{h}</th>
-              ))}</tr>
-            </thead>
-            <tbody>
-              {parties.map((r, i) => (
-                <tr key={i} style={{ borderBottom: `1px solid rgba(26,43,71,0.4)` }}>
-                  <td style={{ ...td, textAlign: "left", color: T.t3 }}>{i + 1}</td>
-                  <td style={{ ...td, textAlign: "left", color: T.text, maxWidth: 220, whiteSpace: "normal" }}>{r.p}</td>
-                  <td style={{ ...td, fontWeight: 700, color: T.a3 }}>{fi(r.o)}</td>
-                  <td style={td}>{r.n}</td>
-                  <td style={{ ...td, minWidth: 110 }}><InlineBar val={r.o} max={maxP} color={PAL[i % PAL.length]} /></td>
-                </tr>
-              ))}
-              <tr style={{ background: "rgba(26,191,138,0.07)", fontWeight: 700 }}>
-                <td style={{ ...td, textAlign: "left", color: PEST_ACCENT }} colSpan={2}>GRAND TOTAL</td>
-                <td style={{ ...td, color: PEST_ACCENT }}>{fi(total)}</td>
-                <td style={{ ...td, color: PEST_ACCENT }}>{pest.length}</td>
-                <td />
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </Card>
-
-      <Card>
-        <CardTitle color={PEST_SEC}>Pest invoice drill-down</CardTitle>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
-          <input style={inp} placeholder="Search party, invoice, branch…" value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} />
-          <select style={sel} value={branchF} onChange={e => { setBranchF(e.target.value); setPage(1); }}>{branchOpts.map(b => <option key={b}>{b}</option>)}</select>
-          <select style={sel} value={fyF}     onChange={e => { setFyF(e.target.value); setPage(1); }}>{fyOpts.map(f => <option key={f}>{f}</option>)}</select>
-          <div style={{ marginLeft: "auto", fontSize: 11, color: T.t2 }}>
-            <span style={{ color: T.a3, fontWeight: 700 }}>{filtered.length}</span> records ·{" "}
-            <span style={{ color: PEST_ACCENT, fontWeight: 700 }}>{fs(totOut)}</span> outstanding
-          </div>
-        </div>
-        <div style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
-            <thead>
-              <tr>{["#","Branch","Party","Invoice No.","Date","FY","Type","Bill Amt","Paid","Outstanding","Reason"].map((h, i) => (
-                <th key={i} style={{ ...th, textAlign: i >= 7 ? "right" : "left" }}>{h}</th>
-              ))}</tr>
-            </thead>
-            <tbody>
-              {paged.map((r, i) => (
-                <tr key={i} style={{ borderBottom: `1px solid rgba(26,43,71,0.4)` }}>
-                  <td style={{ ...td, textAlign: "left", color: T.t3 }}>{(page - 1) * PER_PAGE + i + 1}</td>
-                  <td style={{ ...td, textAlign: "left", color: T.text, maxWidth: 120, whiteSpace: "normal" }}>{r.branch}</td>
-                  <td style={{ ...td, textAlign: "left", color: T.text, maxWidth: 160, whiteSpace: "normal" }}>{r.party}</td>
-                  <td style={{ ...td, textAlign: "left", color: T.t2 }}>{r.invoiceNo}</td>
-                  <td style={{ ...td, textAlign: "left", color: T.t2 }}>{r.invoiceDate ? r.invoiceDate.toLocaleDateString("en-IN") : "—"}</td>
-                  <td style={{ ...td, textAlign: "left" }}>
-                    <span style={{ background: "rgba(26,191,138,0.12)", color: PEST_ACCENT, padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 600 }}>{r.fy}</span>
-                  </td>
-                  <td style={{ ...td, textAlign: "left", color: T.t2, fontSize: 9, maxWidth: 100, whiteSpace: "normal" }}>{r.invoiceType}</td>
-                  <td style={td}>{fi(r.billAmt)}</td>
-                  <td style={{ ...td, color: T.green }}>{fi(r.paidAmt)}</td>
-                  <td style={{ ...td, fontWeight: 700, color: r.outstanding > 0 ? T.red : T.green }}>{fi(r.outstanding)}</td>
-                  <td style={{ ...td, textAlign: "left", color: T.t3, fontSize: 9, maxWidth: 180, whiteSpace: "normal" }}>{r.reason || "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        {pages > 1 && (
-          <div style={{ display: "flex", gap: 6, justifyContent: "center", marginTop: 12, flexWrap: "wrap" }}>
-            <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
-              style={{ padding: "4px 10px", background: T.bg3, border: `1px solid ${T.border}`, borderRadius: 6, color: T.t2, fontSize: 10, cursor: "pointer" }}>‹ Prev</button>
-            {Array.from({ length: Math.min(pages, 9) }, (_, i) => {
-              const p = pages <= 9 ? i + 1 : page <= 5 ? i + 1 : page >= pages - 4 ? pages - 8 + i : page - 4 + i;
-              return <button key={p} onClick={() => setPage(p)} style={{ padding: "4px 9px", background: p === page ? PEST_ACCENT : T.bg3, border: `1px solid ${p === page ? PEST_ACCENT : T.border}`, borderRadius: 6, color: p === page ? "#fff" : T.t2, fontSize: 10, cursor: "pointer" }}>{p}</button>;
+              return (
+                <button key={p} onClick={() => setPage(p)}
+                  style={{ padding: "4px 9px", background: p === page ? T.accent : T.bg3, border: `1px solid ${p === page ? T.accent : T.border}`, borderRadius: 6, color: p === page ? "#fff" : T.t2, fontSize: 10, cursor: "pointer" }}>{p}</button>
+              );
             })}
             <button onClick={() => setPage(p => Math.min(pages, p + 1))} disabled={page === pages}
               style={{ padding: "4px 10px", background: T.bg3, border: `1px solid ${T.border}`, borderRadius: 6, color: T.t2, fontSize: 10, cursor: "pointer" }}>Next ›</button>
@@ -1149,8 +944,8 @@ function PestPage({ data }) {
 
 /* ─── MAIN APP ───────────────────────────────────────────────────── */
 export default function App() {
-  const [rawData,    setRawData]    = useState(null);
-  const [fileName,   setFileName]   = useState("");
+  const [rawData,   setRawData]   = useState(null);
+  const [fileName,  setFileName]  = useState("");
   const [activePage, setActivePage] = useState("overview");
 
   const agg = useMemo(() => rawData ? aggregate(rawData) : null, [rawData]);
@@ -1170,18 +965,9 @@ export default function App() {
     fy:       <FYPage agg={agg} />,
     trend:    <TrendPage agg={agg} />,
     list:     <ListPage data={rawData} />,
-    pest:     <PestPage data={rawData} />,
   };
 
-  const pgTitle = {
-    overview: "Overview",
-    branch:   "Branch-wise",
-    party:    "Party-wise",
-    fy:       "Financial Year",
-    trend:    "Trend & Type",
-    list:     "Outstanding List",
-    pest:     "Pest Outstanding Dashboard",
-  };
+  const pgTitle = { overview: "Overview", branch: "Branch-wise", party: "Party-wise", fy: "Financial Year", trend: "Trend & Type", list: "Outstanding List" };
 
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: T.bg, fontFamily: "'DM Sans', sans-serif", color: T.text }}>
@@ -1202,6 +988,7 @@ export default function App() {
       <Sidebar active={activePage} setActive={setActivePage} fileName={fileName} onReset={() => { setRawData(null); setFileName(""); }} />
 
       <div style={{ flex: 1, overflow: "auto" }}>
+        {/* Top bar */}
         <div style={{ position: "sticky", top: 0, zIndex: 50, background: "rgba(10,15,30,0.95)", backdropFilter: "blur(10px)", borderBottom: `1px solid ${T.border}`, padding: "10px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div>
             <span style={{ fontSize: 14, fontWeight: 700, color: T.text }}>{pgTitle[activePage]}</span>
@@ -1213,19 +1000,48 @@ export default function App() {
           </div>
         </div>
 
+        {/* Page content */}
         <div className="page-anim" key={activePage}>
           {pages[activePage]}
         </div>
 
-        <div style={{ borderTop: `1px solid ${T.border}`, background: "rgba(7,13,26,0.95)", padding: "10px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+        {/* Bottom footer bar */}
+        <div style={{
+          borderTop: `1px solid ${T.border}`,
+          background: "rgba(7,13,26,0.95)",
+          padding: "10px 24px",
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          flexWrap: "wrap", gap: 8,
+        }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ width: 20, height: 20, borderRadius: 5, background: `linear-gradient(135deg, ${T.accent}, ${T.teal})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, color: "#fff", fontWeight: 700, flexShrink: 0 }}>©</div>
-            <span style={{ fontSize: 10, color: T.t3 }}>Copyright 2026 · All rights reserved</span>
-            <span style={{ display: "inline-block", width: 1, height: 12, background: T.border, margin: "0 2px" }} />
-            <span style={{ fontSize: 10, color: T.t2 }}>Outstanding Invoice Dashboard · RO KOCHI</span>
+            <div style={{
+              width: 20, height: 20, borderRadius: 5,
+              background: `linear-gradient(135deg, ${T.accent}, ${T.teal})`,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 10, color: "#fff", fontWeight: 700, flexShrink: 0,
+            }}>©</div>
+            <span style={{ fontSize: 10, color: T.t3 }}>
+              Copyright 2026 · All rights reserved
+            </span>
+            <span style={{
+              display: "inline-block", width: 1, height: 12,
+              background: T.border, margin: "0 2px",
+            }} />
+            <span style={{ fontSize: 10, color: T.t2 }}>
+              Outstanding Invoice Dashboard · RO KOCHI
+            </span>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, background: "rgba(47,125,225,0.07)", border: `1px solid ${T.border}`, borderRadius: 8, padding: "5px 12px" }}>
-            <div style={{ width: 6, height: 6, borderRadius: "50%", background: T.teal, boxShadow: `0 0 6px ${T.teal}` }} />
+          <div style={{
+            display: "flex", alignItems: "center", gap: 8,
+            background: "rgba(47,125,225,0.07)",
+            border: `1px solid ${T.border}`,
+            borderRadius: 8, padding: "5px 12px",
+          }}>
+            <div style={{
+              width: 6, height: 6, borderRadius: "50%",
+              background: T.teal,
+              boxShadow: `0 0 6px ${T.teal}`,
+            }} />
             <span style={{ fontSize: 10, color: T.t2 }}>
               Developed & Deployed by{" "}
               <span style={{ color: T.a2, fontWeight: 700 }}>Rahees Mohammed R</span>
