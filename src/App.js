@@ -888,7 +888,7 @@ function PestPage({ data }) {
 
   const maxB = branches[0]?.o || 1;
   const maxP = parties[0]?.o  || 1;
-  const collPct = totalBill > 0 ? ((totalBill - total) / totalBill * 100).toFixed(1) : "—";
+  const collRate = totalBill > 0 ? ((totalBill - total) / totalBill * 100).toFixed(1) : "0";
 
   const branchOpts = useMemo(() => ["All", ...branches.map(b => b.b)], [branches]);
   const fyOpts     = useMemo(() => ["All", ...fys.map(f => f.fy)],     [fys]);
@@ -929,7 +929,9 @@ function PestPage({ data }) {
 
       <div style={{ display: "flex", gap: 12, marginBottom: 18, flexWrap: "wrap" }}>
         <KPI val={fs(total)}       lbl="Total Pest Outstanding" sub={`${pest.length} invoices · all branches`} color={PEST_ACCENT} />
-       
+        <KPI val={fs(totalBill)}   lbl="Total Pest Billed"      sub="Across all financial years"              color={T.accent} />
+        <KPI val={fs(totalPaid)}   lbl="Total Pest Collected"   sub={`Collection: ${collRate}%`}               color={T.teal} />
+        <KPI val={`${collRate}%`}   lbl="Collection Rate"        sub="Billed vs collected"                     color={parseFloat(collRate) > 80 ? T.green : parseFloat(collRate) > 50 ? T.gold : T.red} />
         <KPI val={branches.length} lbl="Branches Active"        sub="With pest outstanding"                   color={T.pur} />
         <KPI val={parties.length}  lbl="Parties"                sub="Unique pest vendors/clients"             color={T.gold} />
       </div>
