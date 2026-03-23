@@ -1,3 +1,4 @@
+
 import { useState, useMemo, useRef } from "react";
 import * as XLSX from "xlsx";
 import {
@@ -885,10 +886,9 @@ function PestPage({ data }) {
   const pa = useMemo(() => aggregatePest(data), [data]);
   const { pest, branches, parties, fys, types, monthly, total, totalBill, totalPaid, partyPie, branchPie, demoMode } = pa;
 
-  const maxB    = branches[0]?.o || 1;
-  const maxP    = parties[0]?.o  || 1;
-  const fyColors = ["#8b67f0", "#0ec4b0", "#f0a429", "#e84848"];
-  const collPct  = totalBill > 0 ? ((totalBill - total) / totalBill * 100).toFixed(1) : "—";
+  const maxB = branches[0]?.o || 1;
+  const maxP = parties[0]?.o  || 1;
+  const collPct = totalBill > 0 ? ((totalBill - total) / totalBill * 100).toFixed(1) : "—";
 
   const branchOpts = useMemo(() => ["All", ...branches.map(b => b.b)], [branches]);
   const fyOpts     = useMemo(() => ["All", ...fys.map(f => f.fy)],     [fys]);
@@ -929,9 +929,9 @@ function PestPage({ data }) {
 
       <div style={{ display: "flex", gap: 12, marginBottom: 18, flexWrap: "wrap" }}>
         <KPI val={fs(total)}       lbl="Total Pest Outstanding" sub={`${pest.length} invoices · all branches`} color={PEST_ACCENT} />
-        {/* <KPI val={fs(totalBill)}   lbl="Total Pest Billed"      sub="Across all financial years"              color={T.accent} />
+        <KPI val={fs(totalBill)}   lbl="Total Pest Billed"      sub="Across all financial years"              color={T.accent} />
         <KPI val={fs(totalPaid)}   lbl="Total Pest Collected"   sub={`Collection: ${collPct}%`}               color={T.teal} />
-        <KPI val={`${collPct}%`}   lbl="Collection Rate"        sub="Billed vs collected"                     color={parseFloat(collPct) > 80 ? T.green : parseFloat(collPct) > 50 ? T.gold : T.red} /> */}
+        <KPI val={`${collPct}%`}   lbl="Collection Rate"        sub="Billed vs collected"                     color={parseFloat(collPct) > 80 ? T.green : parseFloat(collPct) > 50 ? T.gold : T.red} />
         <KPI val={branches.length} lbl="Branches Active"        sub="With pest outstanding"                   color={T.pur} />
         <KPI val={parties.length}  lbl="Parties"                sub="Unique pest vendors/clients"             color={T.gold} />
       </div>
